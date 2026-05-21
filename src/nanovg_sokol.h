@@ -968,6 +968,13 @@ static void sgnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     SGNVGcall* call = sgnvg__allocCall(sg);
     if (call == NULL) return;
 
+    // Declared without initializers before the first `goto error` so the
+    // amalgamated (C++) build is well-formed: C++ forbids a goto that
+    // crosses an initialized scalar's scope, but permits crossing one
+    // declared without an initializer.
+    int maxverts;
+    int offset;
+
     call->type = SGNVG_FILL;
     call->triangleCount = 4;
     call->pathOffset = sgnvg__allocPaths(sg, npaths);
@@ -982,12 +989,12 @@ static void sgnvg__renderFill(void* uptr, NVGpaint* paint, NVGcompositeOperation
     }
 
     // Worst-case vertex budget: each fill fan of n verts expands to (n-2)*3.
-    int maxverts = call->triangleCount;
+    maxverts = call->triangleCount;
     for (int i = 0; i < npaths; i++) {
         if (paths[i].nfill >= 3) maxverts += (paths[i].nfill - 2) * 3;
         maxverts += paths[i].nstroke;
     }
-    int offset = sgnvg__allocVerts(sg, maxverts);
+    offset = sgnvg__allocVerts(sg, maxverts);
     if (offset == -1) goto error;
 
     for (int i = 0; i < npaths; i++) {
@@ -1042,6 +1049,10 @@ static void sgnvg__renderStroke(void* uptr, NVGpaint* paint, NVGcompositeOperati
     SGNVGcall* call = sgnvg__allocCall(sg);
     if (call == NULL) return;
 
+    // See sgnvg__renderFill: split decl/init so the goto is C++-legal.
+    int maxverts;
+    int offset;
+
     call->type = SGNVG_STROKE;
     call->pathOffset = sgnvg__allocPaths(sg, npaths);
     if (call->pathOffset == -1) goto error;
@@ -1049,8 +1060,8 @@ static void sgnvg__renderStroke(void* uptr, NVGpaint* paint, NVGcompositeOperati
     call->image = paint->image;
     call->blendFunc = sgnvg__blendComposite(op);
 
-    int maxverts = sgnvg__maxVertCount(paths, npaths);
-    int offset = sgnvg__allocVerts(sg, maxverts);
+    maxverts = sgnvg__maxVertCount(paths, npaths);
+    offset = sgnvg__allocVerts(sg, maxverts);
     if (offset == -1) goto error;
 
     for (int i = 0; i < npaths; i++) {
@@ -1089,6 +1100,9 @@ static void sgnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
     SGNVGcall* call = sgnvg__allocCall(sg);
     if (call == NULL) return;
 
+    // See sgnvg__renderFill: split decl/init so the goto is C++-legal.
+    SGNVGfragUniforms* frag;
+
     call->type = SGNVG_TRIANGLES;
     call->image = paint->image;
     call->blendFunc = sgnvg__blendComposite(op);
@@ -1100,7 +1114,7 @@ static void sgnvg__renderTriangles(void* uptr, NVGpaint* paint, NVGcompositeOper
 
     call->uniformOffset = sgnvg__allocFragUniforms(sg, 1);
     if (call->uniformOffset == -1) goto error;
-    SGNVGfragUniforms* frag = sgnvg__fragUniformPtr(sg, call->uniformOffset);
+    frag = sgnvg__fragUniformPtr(sg, call->uniformOffset);
     sgnvg__convertPaint(sg, frag, paint, scissor, 1.0f, fringe, -1.0f);
     frag->type = (float)NSVG_SHADER_IMG;
     return;
