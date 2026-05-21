@@ -5,7 +5,12 @@
 #ifdef NANOVG_GLEW
 #  include <GL/glew.h>
 #endif
-#include <GLFW/glfw3.h>
+// saveScreenShot() uses glReadPixels via GLFW's GL headers. Backends that
+// don't go through GL (e.g. the sokol_gfx demo) define NANOVG_DEMO_NO_GL
+// to drop the GL/GLFW dependency; saveScreenShot then becomes a no-op.
+#ifndef NANOVG_DEMO_NO_GL
+#  include <GLFW/glfw3.h>
+#endif
 #include "nanovg.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -1214,6 +1219,10 @@ static void flipHorizontal(unsigned char* image, int w, int h, int stride)
 
 void saveScreenShot(int w, int h, int premult, const char* name)
 {
+#ifdef NANOVG_DEMO_NO_GL
+	// No GL framebuffer readback available in this build.
+	(void)w; (void)h; (void)premult; (void)name;
+#else
 	unsigned char* image = (unsigned char*)malloc(w*h*4);
 	if (image == NULL)
 		return;
@@ -1225,4 +1234,5 @@ void saveScreenShot(int w, int h, int premult, const char* name)
 	flipHorizontal(image, w, h, w*4);
  	stbi_write_png(name, w, h, 4, image, w*4);
  	free(image);
+#endif
 }

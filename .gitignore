@@ -26,3 +26,5 @@ build/*
 
 ## xcode specific
 *xcuserdata*
+build_demo/
+tests/sokol_compile/build/
