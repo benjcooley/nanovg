@@ -52,9 +52,8 @@
 extern "C" {
 #endif
 
-// Create flags (same semantics as nanovg_gl.h). Defined here only if the
-// GL backend header wasn't already included in the same TU.
-#ifndef NANOVG_GL_H
+// Create flags (classic nanovg GL-backend semantics; the sokol backend is
+// the only one we ship, so they live here).
 enum NVGcreateFlags {
     NVG_ANTIALIAS       = 1<<0,
     NVG_STENCIL_STROKES = 1<<1,
@@ -63,7 +62,6 @@ enum NVGcreateFlags {
 enum NVGimageFlagsGL {
     NVG_IMAGE_NODELETE  = 1<<16, // Do not delete the injected sg_image.
 };
-#endif
 
 NVGcontext* nvgCreateSokol(int flags);
 void        nvgDeleteSokol(NVGcontext* ctx);
@@ -94,7 +92,7 @@ sg_image nvsgImageHandle(NVGcontext* ctx, int image);
 #define NANOVG_SOKOL_MAX_PIPELINES 64
 #endif
 
-// Shader uniform "type" values (match nanovg_gl.h NSVG_SHADER_*).
+// Shader uniform "type" values (classic nanovg NSVG_SHADER_* semantics).
 enum SGNVGshaderType {
     NSVG_SHADER_FILLGRAD,
     NSVG_SHADER_FILLIMG,
@@ -395,6 +393,70 @@ static const char* sgnvg__fs_glsl =
     "}\n";
 #endif
 
+#if defined(SOKOL_METAL)
+static const char* sgnvg__vs_msl =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct vs_params { float2 viewSize; };\n"
+    "struct vs_in { float2 vpos [[attribute(0)]]; float2 tcoord [[attribute(1)]]; };\n"
+    "struct vs_out { float4 pos [[position]]; float2 ftcoord; float2 fpos; };\n"
+    "vertex vs_out vs_main(vs_in inp [[stage_in]], constant vs_params& params [[buffer(0)]]) {\n"
+    "  vs_out o;\n"
+    "  o.ftcoord = inp.tcoord;\n"
+    "  o.fpos = inp.vpos;\n"
+    "  o.pos = float4(2.0*inp.vpos.x/params.viewSize.x - 1.0, 1.0 - 2.0*inp.vpos.y/params.viewSize.y, 0.0, 1.0);\n"
+    "  return o;\n"
+    "}\n";
+static const char* sgnvg__fs_msl =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct fs_params { float4 frag[11]; };\n"
+    "struct fs_in { float4 pos [[position]]; float2 ftcoord; float2 fpos; };\n"
+    "static float sdroundrect(float2 pt, float2 ext, float rad) {\n"
+    "  float2 ext2 = ext - float2(rad, rad);\n"
+    "  float2 d = abs(pt) - ext2;\n"
+    "  return min(max(d.x, d.y), 0.0) + length(max(d, float2(0.0))) - rad;\n"
+    "}\n"
+    "static float3 xform(float2 p, float4 c0, float4 c1, float4 c2) {\n"
+    "  return c0.xyz*p.x + c1.xyz*p.y + c2.xyz;\n"
+    "}\n"
+    "static float scissorMask(float2 p, constant fs_params& u) {\n"
+    "  float2 sc = abs(xform(p, u.frag[0], u.frag[1], u.frag[2]).xy) - u.frag[8].xy;\n"
+    "  sc = float2(0.5,0.5) - sc * u.frag[8].zw;\n"
+    "  return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);\n"
+    "}\n"
+    "fragment float4 fs_main(fs_in inp [[stage_in]], constant fs_params& u [[buffer(0)]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]) {\n"
+    "  float strokeMult = u.frag[10].x; float strokeThr = u.frag[10].y;\n"
+    "  int texType = int(u.frag[10].z); int type = int(u.frag[10].w);\n"
+    "  float scissor = scissorMask(inp.fpos, u);\n"
+    "  float strokeAlpha = min(1.0,(1.0-abs(inp.ftcoord.x*2.0-1.0))*strokeMult) * min(1.0,inp.ftcoord.y);\n"
+    "  if (strokeAlpha < strokeThr) discard_fragment();\n"
+    "  float4 result;\n"
+    "  if (type == 0) {\n"                // gradient
+    "    float2 pt = xform(inp.fpos, u.frag[3], u.frag[4], u.frag[5]).xy;\n"
+    "    float d = clamp((sdroundrect(pt, u.frag[9].xy, u.frag[9].z) + u.frag[9].w*0.5)/u.frag[9].w, 0.0, 1.0);\n"
+    "    float4 color = mix(u.frag[6], u.frag[7], d);\n"
+    "    result = color * (strokeAlpha * scissor);\n"
+    "  } else if (type == 1) {\n"         // image
+    "    float2 pt = xform(inp.fpos, u.frag[3], u.frag[4], u.frag[5]).xy / u.frag[9].xy;\n"
+    "    float4 color = tex.sample(smp, pt);\n"
+    "    if (texType == 1) color = float4(color.xyz*color.w, color.w);\n"
+    "    if (texType == 2) color = float4(color.x);\n"
+    "    color *= u.frag[6];\n"
+    "    result = color * (strokeAlpha * scissor);\n"
+    "  } else if (type == 2) {\n"         // stencil simple
+    "    result = float4(1.0);\n"
+    "  } else {\n"                        // textured tris (text)
+    "    float4 color = tex.sample(smp, inp.ftcoord);\n"
+    "    if (texType == 1) color = float4(color.xyz*color.w, color.w);\n"
+    "    if (texType == 2) color = float4(color.x);\n"
+    "    color *= scissor;\n"
+    "    result = color * u.frag[6];\n"
+    "  }\n"
+    "  return result;\n"
+    "}\n";
+#endif
+
 static sg_shader sgnvg__makeShader(void) {
     sg_shader_desc d;
     memset(&d, 0, sizeof(d));
@@ -404,6 +466,7 @@ static sg_shader sgnvg__makeShader(void) {
     d.uniform_blocks[0].size = 16;
     d.uniform_blocks[0].layout = SG_UNIFORMLAYOUT_STD140;
     d.uniform_blocks[0].hlsl_register_b_n = 0;
+    d.uniform_blocks[0].msl_buffer_n = 0;          // MSL vertex [[buffer(0)]]
     d.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_FLOAT2;
     d.uniform_blocks[0].glsl_uniforms[0].array_count = 1;
     d.uniform_blocks[0].glsl_uniforms[0].glsl_name = "viewSize";
@@ -413,6 +476,7 @@ static sg_shader sgnvg__makeShader(void) {
     d.uniform_blocks[1].size = (uint32_t)(NANOVG_SG_UNIFORMARRAY_SIZE * 16);
     d.uniform_blocks[1].layout = SG_UNIFORMLAYOUT_STD140;
     d.uniform_blocks[1].hlsl_register_b_n = 0;
+    d.uniform_blocks[1].msl_buffer_n = 0;          // MSL fragment [[buffer(0)]]
     d.uniform_blocks[1].glsl_uniforms[0].type = SG_UNIFORMTYPE_FLOAT4;
     d.uniform_blocks[1].glsl_uniforms[0].array_count = NANOVG_SG_UNIFORMARRAY_SIZE;
     d.uniform_blocks[1].glsl_uniforms[0].glsl_name = "frag";
@@ -422,9 +486,11 @@ static sg_shader sgnvg__makeShader(void) {
     d.views[0].texture.image_type = SG_IMAGETYPE_2D;
     d.views[0].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
     d.views[0].texture.hlsl_register_t_n = 0;
+    d.views[0].texture.msl_texture_n = 0;          // MSL [[texture(0)]]
     d.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
     d.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
     d.samplers[0].hlsl_register_s_n = 0;
+    d.samplers[0].msl_sampler_n = 0;               // MSL [[sampler(0)]]
     d.texture_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
     d.texture_sampler_pairs[0].view_slot = 0;
     d.texture_sampler_pairs[0].sampler_slot = 0;
@@ -444,6 +510,11 @@ static sg_shader sgnvg__makeShader(void) {
 #elif defined(SOKOL_GLCORE)
     d.vertex_func.source = sgnvg__vs_glsl;
     d.fragment_func.source = sgnvg__fs_glsl;
+#elif defined(SOKOL_METAL)
+    d.vertex_func.source = sgnvg__vs_msl;
+    d.vertex_func.entry = "vs_main";
+    d.fragment_func.source = sgnvg__fs_msl;
+    d.fragment_func.entry = "fs_main";
 #else
 #error "nanovg_sokol: unsupported sokol backend (add a shader variant)"
 #endif
